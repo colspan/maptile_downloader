@@ -9,6 +9,8 @@ from urlparse import urlparse
 import os
 from math import cos, tan, radians, pi, log
 
+from PIL import Image
+
 import luigi
 import requests
 
@@ -82,12 +84,67 @@ class DownloadBounds(luigi.WrapperTask):
         """
         edge_nw_x, edge_nw_y, _, _ = deg_to_num(
             self.north, self.west, self.zoom)
-        edge_se_x, edge_se_y, _, _ = deg_to_num(self.south, self.east, self.zoom)
+        edge_se_x, edge_se_y, _, _ = deg_to_num(
+            self.south, self.east, self.zoom)
         print deg_to_num(self.north, self.west, self.zoom) + deg_to_num(self.south, self.east, self.zoom)
         for tile_x in range(edge_nw_x, edge_se_x + 1):
             for tile_y in range(edge_nw_y, edge_se_y + 1):
                 print "scheduling z:{} x:{} y:{}".format(self.zoom, tile_x, tile_y)
                 yield DownloadTile(self.baseUrl, self.baseName, tile_x, tile_y, self.zoom)
+
+
+class MergeImgByBounds(luigi.Task):
+    """
+    Schedule Download Tasks
+    """
+    baseUrl = luigi.Parameter()
+    baseName = luigi.Parameter(default="output")
+    west = luigi.FloatParameter()
+    north = luigi.FloatParameter()
+    south = luigi.FloatParameter()
+    east = luigi.FloatParameter()
+    zoom = luigi.IntParameter()
+
+    def __init__(self, *args, **kwargs):
+        super(MergeImgByBounds, self).__init__(*args, **kwargs)
+
+        edge_nw_x, edge_nw_y, _, _ = deg_to_num(
+            self.north, self.west, self.zoom)
+        edge_se_x, edge_se_y, _, _ = deg_to_num(
+            self.south, self.east, self.zoom)
+        self.edge_nw_x = edge_nw_x
+        self.edge_nw_y = edge_nw_y
+        self.edge_se_x = edge_se_x
+        self.edge_se_y = edge_se_y
+
+        require_list = []
+        x_range = range(edge_nw_x - 1, edge_se_x + 1)
+        y_range = range(edge_nw_y - 1, edge_se_y + 1)
+
+        for x, tile_x in enumerate(x_range):
+            for y, tile_y in enumerate(y_range):
+                require_list.append(
+                    (x, y, DownloadTile(self.baseUrl, self.baseName, tile_x, tile_y, self.zoom)))
+        self.require_list = require_list
+
+    def requires(self):
+        """
+        scheduling tasks
+        """
+        return [x[2] for x in self.require_list]
+
+    def output(self):
+        return luigi.LocalTarget("./var/combined_z{}_x{}_{}_y{}_{}.png".format(self.zoom, self.edge_nw_x, self.edge_se_x, self.edge_nw_y, self.edge_se_y))
+
+    def run(self):
+        combined_tile = Image.new(
+            'RGBA', (256 * (self.edge_se_x - self.edge_nw_x + 2), 256 * (self.edge_se_y - self.edge_nw_y + 2)), (255, 255, 255, 255))
+
+        for x, y, inputimg in self.require_list:
+            input_img = Image.open(inputimg.output().fn)
+            combined_tile.paste(input_img, (256 * x, 256 * y))
+        with self.output().open("wb") as output_f:
+            combined_tile.save(output_f, 'PNG')
 
 
 def download():
